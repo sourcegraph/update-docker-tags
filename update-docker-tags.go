@@ -63,6 +63,10 @@ Update all image tags in a directory, enforcing constraints:
 			// Highly doubt anyone would ever want us to traverse git directories.
 			return nil
 		}
+		// hack since we aren't passing filepaths
+		if strings.HasSuffix(path, ".yaml") {
+			return nil
+		}
 
 		data, err := ioutil.ReadFile(path)
 		if err != nil {
@@ -78,32 +82,26 @@ Update all image tags in a directory, enforcing constraints:
 				log.Fatal(err)
 			}
 
-			tags, err := fetchRepositoryTags(token, repository)
-			if err != nil {
-				log.Fatal(err)
-			}
-			var versions []*semver.Version
-			for _, tag := range tags {
-				v, err := semver.NewVersion(tag)
+			oldTag := string(groups[1])
+
+			var newVersion string
+
+			if _, err = semver.NewVersion(oldTag); err != nil {
+				// hacky - assume that the tag isn't a semver one (example: "insiders")
+				// if we can't parse it
+				//
+				// continue by just updating the image digest
+				//
+				newVersion = oldTag
+			} else {
+				newTag, err := findLatestSemverTag(repository, token, constraints)
 				if err != nil {
-					continue // ignore non-semver tags
+					log.Fatalf("failed to find latest semver tag, err: %s", err)
 				}
-				if constraint, ok := constraints[repository]; ok {
-					if constraint.Check(v) {
-						versions = append(versions, v)
-					}
-				} else {
-					versions = append(versions, v)
-				}
-			}
-			sort.Sort(sort.Reverse(semver.Collection(versions)))
 
-			if len(versions) == 0 {
-				fmt.Printf("no semver tags found for %q\n", repository)
-				return groups
+				newVersion = newTag
 			}
 
-			newVersion := versions[0].Original()
 			newDigest, err := fetchImageDigest(token, repository, newVersion)
 			if err != nil {
 				log.Fatal(err)
@@ -125,6 +123,36 @@ Update all image tags in a directory, enforcing constraints:
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func findLatestSemverTag(repository, authToken string, constraints map[string]*semver.Constraints) (string, error) {
+	var versions []*semver.Version
+	tags, err := fetchRepositoryTags(authToken, repository)
+	if err != nil {
+		return "", fmt.Errorf("when fetching repository tags: %w", err)
+	}
+
+	for _, tag := range tags {
+		v, err := semver.NewVersion(tag)
+		if err != nil {
+			continue // ignore non-semver tags
+		}
+		if constraint, ok := constraints[repository]; ok {
+			if constraint.Check(v) {
+				versions = append(versions, v)
+			}
+		} else {
+			versions = append(versions, v)
+		}
+	}
+
+	if len(versions) == 0 {
+		return "", fmt.Errorf("no semver tags found for %q", repository)
+	}
+
+	sort.Sort(sort.Reverse(semver.Collection(versions)))
+
+	return versions[0].Original(), nil
 }
 
 // Effectively the same as:
