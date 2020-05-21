@@ -102,16 +102,15 @@ func updateDockerTags(o *options, root string) error {
 				return groups
 			}
 
-			oldTag := string(groups[1])
+			originalTag := string(groups[1])
 			var newTag string
 
-			if !isSemverTag(oldTag) {
-				// oldTag is something like "latest", which isn't a semver tag
-				newTag = oldTag
+			if isNonSemverTag(originalTag) {
+				newTag = originalTag
 			} else {
 				latest, err := repository.findLatestSemverTag()
 				if err != nil {
-					replaceErr = errors.Wrapf(err, "when finding the latest semver tag for '%s:%s'", repository.name, oldTag)
+					replaceErr = errors.Wrapf(err, "when finding the latest semver tag for '%s:%s'", repository.name, originalTag)
 					return groups
 				}
 
@@ -152,12 +151,12 @@ type repository struct {
 	authToken string
 }
 
-func isSemverTag(tag string) bool {
+func isNonSemverTag(tag string) bool {
 	_, err := semver.NewVersion(tag)
 
-	// Only assume that the tag is a semver one
-	// if we're able to parse it
-	return err == nil
+	// Assume that "tag" isn't a semver one (like "latest")
+	// if we're unable to parse it
+	return err != nil
 }
 
 func (r *repository) findLatestSemverTag() (string, error) {
