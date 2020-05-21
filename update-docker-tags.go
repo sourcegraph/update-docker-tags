@@ -376,7 +376,6 @@ func (rc *rawConstraints) parse() (map[string]*semver.Constraints, error) {
 
 		out[raw.image] = parsed
 	}
-
 	return out, nil
 }
 
