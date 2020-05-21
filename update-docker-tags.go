@@ -67,7 +67,6 @@ Examples:
 	if err != nil {
 		log.Fatal(err)
 	}
-
 }
 
 func run(o *options) error {
