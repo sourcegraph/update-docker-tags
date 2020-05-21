@@ -339,7 +339,6 @@ type rawConstraints []*rawConstraint
 
 func (rc *rawConstraints) String() string {
 	var elems []string
-
 	for _, raw := range *rc {
 		elems = append(elems, raw.String())
 	}
