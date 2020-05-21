@@ -166,7 +166,6 @@ func (r *repository) FindNextTag(oldTag string) (string, error) {
 	if err != nil {
 		return "", errors.Wrapf(err, "when finding newest semver tag")
 	}
-
 	return nextTag, nil
 }
 
