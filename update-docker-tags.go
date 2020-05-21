@@ -341,7 +341,6 @@ func (rc *rawConstraints) String() string {
 	for _, raw := range *rc {
 		elems = append(elems, raw.String())
 	}
-
 	return strings.Join(elems, ", ")
 }
 
