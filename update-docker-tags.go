@@ -111,10 +111,19 @@ func updateDockerTags(o *options, root string) error {
 			}
 
 			oldTag := string(groups[1])
-			newTag, err := repository.FindNextTag(oldTag)
-			if err != nil {
-				replaceErr = errors.Wrapf(err, "when finding the next tag for '%s:%s'", repository.name, oldTag)
-				return groups
+			var newTag string
+
+			if !isSemverTag(oldTag) {
+				// oldTag is something like "latest", which isn't a semver tag
+				newTag = oldTag
+			} else {
+				latest, err := repository.findLatestSemverTag()
+				if err != nil {
+					replaceErr = errors.Wrapf(err, "when finding the latest semver tag for '%s:%s'", repository.name, oldTag)
+					return groups
+				}
+
+				newTag = latest
 			}
 
 			newDigest, err := repository.fetchImageDigest(newTag)
@@ -151,21 +160,12 @@ type repository struct {
 	authToken string
 }
 
-func (r *repository) FindNextTag(oldTag string) (string, error) {
-	if _, err := semver.NewVersion(oldTag); err != nil {
-		// HACK: assume that the tag isn't a semver one (example: "insiders")
-		// if we can't parse it
-		//
-		// continue by just updating the image digest
-		//
-		return oldTag, nil
-	}
+func isSemverTag(tag string) bool {
+	_, err := semver.NewVersion(tag)
 
-	nextTag, err := r.findLatestSemverTag()
-	if err != nil {
-		return "", errors.Wrapf(err, "when finding newest semver tag")
-	}
-	return nextTag, nil
+	// Only assume that the tag is a semver one
+	// if we're able to parse it
+	return err == nil
 }
 
 func (r *repository) findLatestSemverTag() (string, error) {
@@ -193,6 +193,7 @@ func (r *repository) findLatestSemverTag() (string, error) {
 	if len(versions) == 0 {
 		return "", fmt.Errorf("no semver tags found for %q", r.name)
 	}
+
 	sort.Sort(sort.Reverse(semver.Collection(versions)))
 	latestTag := versions[0].Original()
 	return latestTag, nil
