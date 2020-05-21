@@ -356,7 +356,6 @@ func (rc *rawConstraints) Set(value string) error {
 	}
 
 	image, constraint := splits[0], splits[1]
-
 	*rc = append(*rc, &rawConstraint{
 		image:      image,
 		constraint: constraint,
