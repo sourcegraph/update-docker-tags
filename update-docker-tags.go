@@ -397,5 +397,4 @@ func newRepository(o *options, repositoryName string) (*repository, error) {
 
 		authToken: token,
 	}, nil
-
 }
