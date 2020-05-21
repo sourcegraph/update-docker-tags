@@ -361,7 +361,6 @@ func (rc *rawConstraints) Set(value string) error {
 		image:      image,
 		constraint: constraint,
 	})
-
 	return nil
 }
 
