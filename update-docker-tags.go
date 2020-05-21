@@ -390,7 +390,6 @@ func newRepository(o *options, repositoryName string) (*repository, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "when fetching auth token")
 	}
-
 	return &repository{
 		name:       repositoryName,
 		constraint: o.constraints[repositoryName],
