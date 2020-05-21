@@ -194,7 +194,6 @@ func (r *repository) findLatestSemverTag() (string, error) {
 	if len(versions) == 0 {
 		return "", fmt.Errorf("no semver tags found for %q", r.name)
 	}
-
 	sort.Sort(sort.Reverse(semver.Collection(versions)))
 	latestTag := versions[0].Original()
 	return latestTag, nil
