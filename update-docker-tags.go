@@ -63,20 +63,12 @@ Examples:
 		filePaths:   paths,
 	}
 
-	err = run(o)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func run(o *options) error {
 	for _, root := range o.filePaths {
 		if err := updateDockerTags(o, root); err != nil {
-			return errors.Wrapf(err, "failed to update docker tags for root %q", root)
+			log.Fatalf("failed to update docker tags for root %q, err: %s", root, err)
 		}
 	}
 
-	return nil
 }
 
 // UpdateDockerTags updates the Docker tags for the entire file tree rooted at
