@@ -14,51 +14,71 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver"
+	"github.com/pkg/errors"
 )
+
+// TODO: make this not Sourcegraph-specific
+var TAG_PATTERN = regexp.MustCompile(`(sourcegraph/.+):(.+)@(sha256:[[:alnum:]]+)`)
+
+var constraintArgs rawConstraints
 
 func main() {
 	flag.Usage = func() {
-		fmt.Printf(`usage:
+		fmt.Printf(`update-docker-tags
 
-Update all image tags in a directory:
+Usage:
+	update-docker-tags [options] < FILE | FOLDER >...
 
-  $ cd dir/ && update-docker-tags
+Options:
+	--constraint (repeatable) enforce a semver constraint for a given docker image
 
-Update all image tags in a directory, enforcing constraints:
+Examples:
 
-  $ cd dir/ && update-docker-tags ubuntu=<18.04 alpine=<3.10
+	Update all image tags in a directory:
 
-		`)
+	$ update-docker-tags dir/
+
+	Update all image tags in the given files and folders, enforcing constraints:
+
+	$ update-docker-tags --constraint=ubuntu=<18.04 --constraint=alpine=<3.10 deployment.yaml dir/ 
+`)
 		os.Exit(2)
 	}
+	flag.Var(&constraintArgs, "constraint", "(repeatable) add a semver constraint for a given docker image")
 	flag.Parse()
 
-	// TODO: make this not Sourcegraph-specific
-	tagPattern := regexp.MustCompile(`(sourcegraph/.+):(.+)@(sha256:[[:alnum:]]+)`)
-
-	mustNewConstraint := func(c string) *semver.Constraints {
-		cs, err := semver.NewConstraint(c)
-		if err != nil {
-			log.Fatal("cannot parse constraint", err)
-		}
-		return cs
+	parsedConstraints, err := constraintArgs.parse()
+	if err != nil {
+		log.Fatalf("failed to parse raw constraints, err: %s", err)
 	}
 
-	constraints := map[string]*semver.Constraints{}
-	for _, arg := range flag.Args() {
-		split := strings.Split(arg, "=")
-		if len(split) != 2 {
-			log.Fatal("unexpected argument", arg)
-		}
-		image, constraint := split[0], split[1]
-		constraints[image] = mustNewConstraint(constraint)
+	paths := flag.Args()
+	if len(paths) == 0 {
+		flag.Usage()
+		os.Exit(2)
 	}
 
-	dir := "."
-	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	o := &options{
+		constraints: parsedConstraints,
+		filePaths:   paths,
+	}
+
+	for _, root := range o.filePaths {
+		if err := updateDockerTags(o, root); err != nil {
+			log.Fatalf("failed to update docker tags for root %q, err: %s", root, err)
+		}
+	}
+
+}
+
+// UpdateDockerTags updates the Docker tags for the entire file tree rooted at
+// "root" using the provided constraints.
+func updateDockerTags(o *options, root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if info.IsDir() {
 			return nil
 		}
+
 		if strings.HasPrefix(path, ".git") {
 			// Highly doubt anyone would ever want us to traverse git directories.
 			return nil
@@ -66,77 +86,121 @@ Update all image tags in a directory, enforcing constraints:
 
 		data, err := ioutil.ReadFile(path)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "when reading file contents")
 		}
 
 		printedPath := false
-		data = replaceAllSubmatchFunc(tagPattern, data, func(groups [][]byte) [][]byte {
-			repository := string(groups[0])
 
-			token, err := fetchAuthToken(repository)
+		// replaceErr is a workaround for replaceAllSubmatchFunc not propagating errors
+		var replaceErr error
+		data = replaceAllSubmatchFunc(TAG_PATTERN, data, func(groups [][]byte) [][]byte {
+
+			repositoryName := string(groups[0])
+			repository, err := newRepository(o, repositoryName)
 			if err != nil {
-				log.Fatal(err)
-			}
-
-			tags, err := fetchRepositoryTags(token, repository)
-			if err != nil {
-				log.Fatal(err)
-			}
-			var versions []*semver.Version
-			for _, tag := range tags {
-				v, err := semver.NewVersion(tag)
-				if err != nil {
-					continue // ignore non-semver tags
-				}
-				if constraint, ok := constraints[repository]; ok {
-					if constraint.Check(v) {
-						versions = append(versions, v)
-					}
-				} else {
-					versions = append(versions, v)
-				}
-			}
-			sort.Sort(sort.Reverse(semver.Collection(versions)))
-
-			if len(versions) == 0 {
-				fmt.Printf("no semver tags found for %q\n", repository)
+				replaceErr = errors.Wrapf(err, "when initializing repository %q", repositoryName)
 				return groups
 			}
 
-			newVersion := versions[0].Original()
-			newDigest, err := fetchImageDigest(token, repository, newVersion)
-			if err != nil {
-				log.Fatal(err)
+			originalTag := string(groups[1])
+			var newTag string
+
+			if isNonSemverTag(originalTag) {
+				newTag = originalTag
+			} else {
+				latest, err := repository.findLatestSemverTag()
+				if err != nil {
+					replaceErr = errors.Wrapf(err, "when finding the latest semver tag for '%s:%s'", repository.name, originalTag)
+					return groups
+				}
+
+				newTag = latest
 			}
+
+			newDigest, err := repository.fetchImageDigest(newTag)
+			if err != nil {
+				replaceErr = errors.Wrapf(err, "when fetching image digest for '%s:%s'", repository.name, newTag)
+				return groups
+			}
+
 			if !printedPath {
 				printedPath = true
 				fmt.Println(path)
 			}
-			fmt.Println("\t", repository, "\t\t", newVersion)
-			groups[1] = []byte(newVersion)
+
+			fmt.Println("\t", repository.name, "\t\t", newTag)
+			groups[1] = []byte(newTag)
 			groups[2] = []byte(newDigest)
+
 			return groups
 		}, -1)
 
-		if err := ioutil.WriteFile(path, data, info.Mode()); err != nil {
-			return err
+		if replaceErr != nil {
+			return errors.Wrapf(replaceErr, "when replacing image tags in %q", path)
 		}
-		return nil
-	}); err != nil {
-		log.Fatal(err)
+
+		err = ioutil.WriteFile(path, data, info.Mode())
+		return errors.Wrapf(err, "when writing file contents of %q", path)
+	})
+}
+
+type repository struct {
+	name       string
+	constraint *semver.Constraints
+
+	authToken string
+}
+
+func isNonSemverTag(tag string) bool {
+	_, err := semver.NewVersion(tag)
+
+	// Assume that "tag" isn't a semver one (like "latest")
+	// if we're unable to parse it
+	return err != nil
+}
+
+func (r *repository) findLatestSemverTag() (string, error) {
+	var versions []*semver.Version
+	tags, err := r.fetchAllTags()
+	if err != nil {
+		return "", errors.Wrap(err, "when fetching all tags")
 	}
+
+	for _, t := range tags {
+		v, err := semver.NewVersion(t)
+		if err != nil {
+			continue // ignore non-semver tags
+		}
+
+		if r.constraint != nil {
+			if r.constraint.Check(v) {
+				versions = append(versions, v)
+			}
+		} else {
+			versions = append(versions, v)
+		}
+	}
+
+	if len(versions) == 0 {
+		return "", fmt.Errorf("no semver tags found for %q", r.name)
+	}
+
+	sort.Sort(sort.Reverse(semver.Collection(versions)))
+	latestTag := versions[0].Original()
+	return latestTag, nil
 }
 
 // Effectively the same as:
 //
 //  $ curl -s -D - -H "Authorization: Bearer $token" -H "Accept: application/vnd.docker.distribution.manifest.v2+json" https://index.docker.io/v2/sourcegraph/server/manifests/3.12.1 | grep Docker-Content-Digest
 //
-func fetchImageDigest(token, repository, tag string) (string, error) {
-	req, err := http.NewRequest("GET", "https://index.docker.io/v2/"+repository+"/manifests/"+tag, nil)
+func (r *repository) fetchImageDigest(tag string) (string, error) {
+	req, err := http.NewRequest("GET", "https://index.docker.io/v2/"+r.name+"/manifests/"+tag, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.authToken))
 	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -144,6 +208,7 @@ func fetchImageDigest(token, repository, tag string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+
 	return resp.Header.Get("Docker-Content-Digest"), nil
 }
 
@@ -151,8 +216,8 @@ func fetchImageDigest(token, repository, tag string) (string, error) {
 //
 // 	$ export token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:sourcegraph/server:pull" | jq -r .token)
 //
-func fetchAuthToken(repository string) (string, error) {
-	resp, err := http.Get(fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repository))
+func fetchAuthToken(repositoryName string) (string, error) {
+	resp, err := http.Get(fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repositoryName))
 	if err != nil {
 		return "", err
 	}
@@ -171,12 +236,12 @@ func fetchAuthToken(repository string) (string, error) {
 //
 // 	$ curl -H "Authorization: Bearer $token" https://index.docker.io/v2/sourcegraph/server/tags/list
 //
-func fetchRepositoryTags(token, repository string) ([]string, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://index.docker.io/v2/%s/tags/list", repository), nil)
+func (r *repository) fetchAllTags() ([]string, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://index.docker.io/v2/%s/tags/list", r.name), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+r.authToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -249,4 +314,68 @@ func replaceAllSubmatchFunc(re *regexp.Regexp, src []byte, repl func([][]byte) [
 	}
 	result = append(result, src[last:]...) // remaining
 	return result
+}
+
+type rawConstraint struct {
+	image      string
+	constraint string
+}
+
+func (rc *rawConstraint) String() string {
+	return fmt.Sprintf("%s=%s", rc.image, rc.constraint)
+}
+
+type rawConstraints []*rawConstraint
+
+func (rc *rawConstraints) String() string {
+	var elems []string
+	for _, raw := range *rc {
+		elems = append(elems, raw.String())
+	}
+	return strings.Join(elems, ", ")
+}
+
+func (rc *rawConstraints) Set(value string) error {
+	splits := strings.Split(value, "=")
+	if len(splits) != 2 {
+		return fmt.Errorf("unable to split constraint %q", value)
+	}
+
+	image, constraint := splits[0], splits[1]
+	*rc = append(*rc, &rawConstraint{
+		image:      image,
+		constraint: constraint,
+	})
+	return nil
+}
+
+func (rc *rawConstraints) parse() (map[string]*semver.Constraints, error) {
+	var out map[string]*semver.Constraints
+	for _, raw := range *rc {
+		parsed, err := semver.NewConstraint(raw.constraint)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse constraint %q, err: %w", raw.constraint, err)
+		}
+
+		out[raw.image] = parsed
+	}
+	return out, nil
+}
+
+type options struct {
+	constraints map[string]*semver.Constraints
+	filePaths   []string
+}
+
+func newRepository(o *options, repositoryName string) (*repository, error) {
+	token, err := fetchAuthToken(repositoryName)
+	if err != nil {
+		return nil, errors.Wrap(err, "when fetching auth token")
+	}
+	return &repository{
+		name:       repositoryName,
+		constraint: o.constraints[repositoryName],
+
+		authToken: token,
+	}, nil
 }
