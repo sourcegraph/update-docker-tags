@@ -350,7 +350,7 @@ func (rc *rawConstraints) Set(value string) error {
 }
 
 func (rc *rawConstraints) parse() (map[string]*semver.Constraints, error) {
-	var out map[string]*semver.Constraints
+	out := map[string]*semver.Constraints{}
 	for _, raw := range *rc {
 		parsed, err := semver.NewConstraint(raw.constraint)
 		if err != nil {
