@@ -11,6 +11,17 @@ archives:
       windows: Windows
       386: i386
       amd64: x86_64
+brews:
+  - github:
+      owner: ggilmore
+      name: homebrew-update-docker-tags
+    folder: Formula
+    homepage: https://github.com/slimsag/update-docker-tags
+    description: CLI to update Docker tag image versions
+    test: |
+      system "#{bin}/update-docker-tags --help"
+    dependencies:
+      - go
 checksum:
   name_template: "checksums.txt"
 snapshot:
