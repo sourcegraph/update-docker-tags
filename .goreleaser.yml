@@ -13,7 +13,7 @@ archives:
       amd64: x86_64
 brews:
   - github:
-      owner: ggilmore
+      owner: slimsag
       name: homebrew-update-docker-tags
     folder: Formula
     homepage: https://github.com/slimsag/update-docker-tags
