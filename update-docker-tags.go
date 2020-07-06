@@ -17,8 +17,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// TODO: make this not Sourcegraph-specific
-var TAG_PATTERN = regexp.MustCompile(`(sourcegraph/.+):(.+)@(sha256:[[:alnum:]]+)`)
+var defaultPattern = `\b([[:alnum:]/\.\-]+):(.+)@(sha256:[[:alnum:]]+)\b`
 
 var constraintArgs rawConstraints
 
@@ -30,7 +29,8 @@ Usage:
 	update-docker-tags [options] < FILE | FOLDER >...
 
 Options:
-	--constraint (repeatable) enforce a semver constraint for a given docker image
+	--constraint  (repeatable) enforce a semver constraint for a given docker image
+	--pattern     specify a custom regexp to match docker image tags
 
 Examples:
 
@@ -45,6 +45,7 @@ Examples:
 		os.Exit(2)
 	}
 	flag.Var(&constraintArgs, "constraint", "(repeatable) add a semver constraint for a given docker image")
+	patternArg := flag.String("pattern", defaultPattern, "specify a custom regexp to match docker images")
 	flag.Parse()
 
 	parsedConstraints, err := constraintArgs.parse()
@@ -57,10 +58,14 @@ Examples:
 		flag.Usage()
 		os.Exit(2)
 	}
-
+	tagPattern, err := regexp.Compile(*patternArg)
+	if err != nil {
+		log.Fatalf("failed to parse --pattern regex: %s: %s", *patternArg, err)
+	}
 	o := &options{
 		constraints: parsedConstraints,
 		filePaths:   paths,
+		tagPattern:  tagPattern,
 	}
 
 	for _, root := range o.filePaths {
@@ -93,7 +98,7 @@ func updateDockerTags(o *options, root string) error {
 
 		// replaceErr is a workaround for replaceAllSubmatchFunc not propagating errors
 		var replaceErr error
-		data = replaceAllSubmatchFunc(TAG_PATTERN, data, func(groups [][]byte) [][]byte {
+		data = replaceAllSubmatchFunc(o.tagPattern, data, func(groups [][]byte) [][]byte {
 
 			repositoryName := string(groups[0])
 			repository, err := newRepository(o, repositoryName)
@@ -108,7 +113,7 @@ func updateDockerTags(o *options, root string) error {
 			if isNonSemverTag(originalTag) {
 				newTag = originalTag
 			} else {
-				latest, err := repository.findLatestSemverTag()
+				latest, err := repository.findLatestSemverTag(originalTag)
 				if err != nil {
 					replaceErr = errors.Wrapf(err, "when finding the latest semver tag for '%s:%s'", repository.name, originalTag)
 					return groups
@@ -144,9 +149,12 @@ func updateDockerTags(o *options, root string) error {
 	})
 }
 
+// repository describes a repository on a Docker registry and provides an API
+// for querying information about it.
 type repository struct {
-	name       string
-	constraint *semver.Constraints
+	name           string
+	registry, repo string // TODO: why is repo separate from the repository "name"?
+	constraint     *semver.Constraints
 
 	authToken string
 }
@@ -159,7 +167,7 @@ func isNonSemverTag(tag string) bool {
 	return err != nil
 }
 
-func (r *repository) findLatestSemverTag() (string, error) {
+func (r *repository) findLatestSemverTag(originalTag string) (string, error) {
 	var versions []*semver.Version
 	tags, err := r.fetchAllTags()
 	if err != nil {
@@ -195,12 +203,13 @@ func (r *repository) findLatestSemverTag() (string, error) {
 //  $ curl -s -D - -H "Authorization: Bearer $token" -H "Accept: application/vnd.docker.distribution.manifest.v2+json" https://index.docker.io/v2/sourcegraph/server/manifests/3.12.1 | grep Docker-Content-Digest
 //
 func (r *repository) fetchImageDigest(tag string) (string, error) {
-	req, err := http.NewRequest("GET", "https://index.docker.io/v2/"+r.name+"/manifests/"+tag, nil)
+	req, err := http.NewRequest("GET", r.registry+r.repo+"/manifests/"+tag, nil)
 	if err != nil {
 		return "", err
 	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.authToken))
+	if r.authToken != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.authToken))
+	}
 	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -210,6 +219,16 @@ func (r *repository) fetchImageDigest(tag string) (string, error) {
 	defer resp.Body.Close()
 
 	return resp.Header.Get("Docker-Content-Digest"), nil
+}
+
+func parseRegistry(reg string) (registry, repo string, err error) {
+	val := strings.Split(reg, "/")
+	if len(val) < 3 {
+		return "https://index.docker.io/v2/", reg, nil
+	} else if len(val) > 3 {
+		return "", "", fmt.Errorf("parsing error, expected \" %s \" to contain only 3 / ", reg)
+	}
+	return "https://" + val[0] + "/v2/", val[1] + "/" + val[2], nil
 }
 
 // Effectively the same as:
@@ -237,11 +256,13 @@ func fetchAuthToken(repositoryName string) (string, error) {
 // 	$ curl -H "Authorization: Bearer $token" https://index.docker.io/v2/sourcegraph/server/tags/list
 //
 func (r *repository) fetchAllTags() ([]string, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://index.docker.io/v2/%s/tags/list", r.name), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s/tags/list", r.registry, r.repo), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+r.authToken)
+	if r.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+r.authToken)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -365,17 +386,36 @@ func (rc *rawConstraints) parse() (map[string]*semver.Constraints, error) {
 type options struct {
 	constraints map[string]*semver.Constraints
 	filePaths   []string
+	tagPattern  *regexp.Regexp
 }
 
 func newRepository(o *options, repositoryName string) (*repository, error) {
-	token, err := fetchAuthToken(repositoryName)
+	repositoryName = qualifyRepository(repositoryName)
+	registry, repo, err := parseRegistry(repositoryName)
 	if err != nil {
-		return nil, errors.Wrap(err, "when fetching auth token")
+		return nil, err
+	}
+	var token string
+	if registry == "https://index.docker.io/v2/" {
+		token, err = fetchAuthToken(repositoryName)
+		if err != nil {
+			return nil, errors.Wrap(err, "when fetching auth token")
+		}
 	}
 	return &repository{
 		name:       repositoryName,
+		registry:   registry,
+		repo:       repo,
 		constraint: o.constraints[repositoryName],
 
 		authToken: token,
 	}, nil
+}
+
+// qualifyRepository checks if the repository is a "library" style repo; doesn't have a "/"
+func qualifyRepository(repositoryName string) string {
+	if strings.Contains(repositoryName, "/") {
+		return repositoryName
+	}
+	return "library/" + repositoryName
 }
