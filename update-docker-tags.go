@@ -271,15 +271,11 @@ func (r *repository) fetchAllTags() ([]string, error) {
 	defer resp.Body.Close()
 
 	result := struct {
-		Tags   []string
-		Errors interface{}
+		Tags []string
 	}{}
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
 		return nil, err
-	}
-	if result.Errors != nil {
-		return nil, fmt.Errorf("Errors: %v", result.Errors)
 	}
 	return result.Tags, nil
 }
@@ -401,7 +397,7 @@ func newRepository(o *options, repositoryName string) (*repository, error) {
 	}
 	var token string
 	if registry == "https://index.docker.io/v2/" {
-		token, err = fetchAuthToken(repo)
+		token, err = fetchAuthToken(repositoryName)
 		if err != nil {
 			return nil, errors.Wrap(err, "when fetching auth token")
 		}
