@@ -20,7 +20,15 @@ import (
 // TODO: make this not Sourcegraph-specific
 var TAG_PATTERN = regexp.MustCompile(`(sourcegraph/.+):(.+)@(sha256:[[:alnum:]]+)`)
 
-var constraintArgs rawConstraints
+var (
+	constraintArgs rawConstraints
+	enforceArgs    rawConstraints
+)
+
+const (
+	helpConstraint = "perform semver update on given docker image to satisfy semver constraint (repeatable)"
+	helpEnforce    = "override given docker image to enforce a semver constraint (repeatable)"
+)
 
 func main() {
 	flag.Usage = func() {
@@ -30,7 +38,8 @@ Usage:
 	update-docker-tags [options] < FILE | FOLDER >...
 
 Options:
-	--constraint (repeatable) enforce a semver constraint for a given docker image
+	--constraint  %s 
+	--enforce     %s
 
 Examples:
 
@@ -38,18 +47,28 @@ Examples:
 
 	$ update-docker-tags dir/
 
-	Update all image tags in the given files and folders, enforcing constraints:
+	Update all image tags in the given files and folders, satisfying constraints:
 
 	$ update-docker-tags --constraint=ubuntu=<18.04 --constraint=alpine=<3.10 deployment.yaml dir/ 
-`)
+
+	Override all tags in the given files and folders to enforce a constraint:
+
+	$ update-docker-tags --enforce=sourcegraph/frontend=~3.19
+`, helpConstraint, helpEnforce)
 		os.Exit(2)
 	}
-	flag.Var(&constraintArgs, "constraint", "(repeatable) add a semver constraint for a given docker image")
+	flag.Var(&constraintArgs, "constraint", helpConstraint)
+	flag.Var(&enforceArgs, "enforce", helpEnforce)
+
 	flag.Parse()
 
 	parsedConstraints, err := constraintArgs.parse()
 	if err != nil {
 		log.Fatalf("failed to parse raw constraints, err: %s", err)
+	}
+	parsedEnforce, err := enforceArgs.parse()
+	if err != nil {
+		log.Fatalf("failed to parse raw enforce, err: %s", err)
 	}
 
 	paths := flag.Args()
@@ -60,6 +79,7 @@ Examples:
 
 	o := &options{
 		constraints: parsedConstraints,
+		enforce:     parsedEnforce,
 		filePaths:   paths,
 	}
 
@@ -105,7 +125,8 @@ func updateDockerTags(o *options, root string) error {
 			originalTag := string(groups[1])
 			var newTag string
 
-			if isNonSemverTag(originalTag) {
+			// if we are not enforcing a constraint, keep non-semver tags
+			if isNonSemverTag(originalTag) && !repository.enforceConstraint {
 				newTag = originalTag
 			} else {
 				latest, err := repository.findLatestSemverTag()
@@ -145,8 +166,9 @@ func updateDockerTags(o *options, root string) error {
 }
 
 type repository struct {
-	name       string
-	constraint *semver.Constraints
+	name              string
+	constraint        *semver.Constraints
+	enforceConstraint bool
 
 	authToken string
 }
@@ -364,6 +386,7 @@ func (rc *rawConstraints) parse() (map[string]*semver.Constraints, error) {
 
 type options struct {
 	constraints map[string]*semver.Constraints
+	enforce     map[string]*semver.Constraints
 	filePaths   []string
 }
 
@@ -371,6 +394,14 @@ func newRepository(o *options, repositoryName string) (*repository, error) {
 	token, err := fetchAuthToken(repositoryName)
 	if err != nil {
 		return nil, errors.Wrap(err, "when fetching auth token")
+	}
+	if enforce, exists := o.enforce[repositoryName]; exists {
+		return &repository{
+			name:              repositoryName,
+			constraint:        enforce,
+			enforceConstraint: true,
+			authToken:         token,
+		}, nil
 	}
 	return &repository{
 		name:       repositoryName,
