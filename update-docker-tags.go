@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 	"github.com/pkg/errors"
 )
 
@@ -131,7 +131,7 @@ func updateDockerTags(o *options, root string) error {
 			} else {
 				latest, err := repository.findLatestSemverTag()
 				if err != nil {
-					replaceErr = errors.Wrapf(err, "when finding the latest semver tag for '%s:%s'", repository.name, originalTag)
+					replaceErr = errors.Wrapf(err, "when finding tag for '%s:%s'", repository.name, originalTag)
 					return groups
 				}
 
@@ -204,6 +204,9 @@ func (r *repository) findLatestSemverTag() (string, error) {
 	}
 
 	if len(versions) == 0 {
+		if r.constraint != nil {
+			return "", fmt.Errorf("no semver tags found for %q matching constraints %q", r.name, r.constraint.String())
+		}
 		return "", fmt.Errorf("no semver tags found for %q", r.name)
 	}
 
