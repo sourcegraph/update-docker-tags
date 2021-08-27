@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -149,7 +150,7 @@ func updateDockerTags(o *options, root string) error {
 				fmt.Println(path)
 			}
 
-			fmt.Println("\t", repository.name, "\t\t", newTag)
+			fmt.Println("\t", repository.name, "\t\t", newTag+"@"+newDigest)
 			groups[1] = []byte(newTag)
 			groups[2] = []byte(newDigest)
 
@@ -233,6 +234,10 @@ func (r *repository) fetchImageDigest(tag string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return "", errors.New(resp.Status + ": " + string(data))
+	}
 
 	return resp.Header.Get("Docker-Content-Digest"), nil
 }
