@@ -1,18 +1,15 @@
-# update-docker-tags (WIP, not ready for use outside of Sourcegraph)
+# sourcegraph/update-docker-tags
 
 CLI to update Docker tag image versions
 
 ## Installation
-
-Via [brew](https://brew.sh/):
-
-```sh
-brew tap slimsag/update-docker-tags
-brew install update-docker-tags
-```
 
 Via Go:
 
 ```sh
 go get -u github.com/slimsag/update-docker-tags
 ```
+
+## Usage
+
+Programmatic usage example: https://github.com/sourcegraph/deploy-sourcegraph/blob/master/tools/enforce-tags/main.go
