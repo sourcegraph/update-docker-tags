@@ -1,4 +1,4 @@
-module github.com/slimsag/update-docker-tags
+module github.com/sourcegraph/update-docker-tags
 
 go 1.14
 
