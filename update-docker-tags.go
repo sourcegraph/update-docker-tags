@@ -24,11 +24,13 @@ var TAG_PATTERN = regexp.MustCompile(`(sourcegraph/.+):(.+)@(sha256:[[:alnum:]]+
 var (
 	constraintArgs rawConstraints
 	enforceArgs    rawConstraints
+	updateArgs     stringArray
 )
 
 const (
 	helpConstraint = "perform semver update on given docker image to satisfy semver constraint (repeatable)"
 	helpEnforce    = "override given docker image to enforce a semver constraint (repeatable)"
+	helpUpdate     = "update target docker images using the already set tags (repeatable)"
 )
 
 func main() {
@@ -41,12 +43,17 @@ Usage:
 Options:
 	--constraint  %s 
 	--enforce     %s
+	--update      %s
 
 Examples:
 
 	Update all image tags in a directory:
 
 	$ update-docker-tags dir/
+
+	Update specific images:
+
+	$ update-docker-tags --update=sourcegraph/frontend
 
 	Update all image tags in the given files and folders, satisfying constraints:
 
@@ -55,11 +62,12 @@ Examples:
 	Override all tags in the given files and folders to enforce a constraint:
 
 	$ update-docker-tags --enforce=sourcegraph/frontend=~3.19
-`, helpConstraint, helpEnforce)
+`, helpConstraint, helpEnforce, helpUpdate)
 		os.Exit(2)
 	}
 	flag.Var(&constraintArgs, "constraint", helpConstraint)
 	flag.Var(&enforceArgs, "enforce", helpEnforce)
+	flag.Var(&updateArgs, "update", helpEnforce)
 
 	flag.Parse()
 
@@ -81,6 +89,7 @@ Examples:
 	o := &options{
 		constraints: parsedConstraints,
 		enforce:     parsedEnforce,
+		update:      updateArgs.values,
 		filePaths:   paths,
 	}
 
@@ -120,6 +129,9 @@ func updateDockerTags(o *options, root string) error {
 			repository, err := newRepository(o, repositoryName)
 			if err != nil {
 				replaceErr = errors.Wrapf(err, "when initializing repository %q", repositoryName)
+				return groups
+			}
+			if repository.ignore {
 				return groups
 			}
 
@@ -170,6 +182,7 @@ type repository struct {
 	name              string
 	constraint        *semver.Constraints
 	enforceConstraint bool
+	ignore            bool
 
 	authToken string
 }
@@ -392,9 +405,30 @@ func (rc *rawConstraints) parse() (map[string]*semver.Constraints, error) {
 	return out, nil
 }
 
+type stringArray struct {
+	values map[string]bool
+}
+
+func (s *stringArray) String() string {
+	var elems []string
+	for image := range *&s.values {
+		elems = append(elems, image)
+	}
+	return strings.Join(elems, ", ")
+}
+
+func (s *stringArray) Set(value string) error {
+	if s.values == nil {
+		s.values = map[string]bool{}
+	}
+	s.values[value] = true
+	return nil
+}
+
 type options struct {
 	constraints map[string]*semver.Constraints
 	enforce     map[string]*semver.Constraints
+	update      map[string]bool
 	filePaths   []string
 }
 
@@ -411,10 +445,23 @@ func newRepository(o *options, repositoryName string) (*repository, error) {
 			authToken:         token,
 		}, nil
 	}
+	if constraint, exists := o.constraints[repositoryName]; exists {
+		return &repository{
+			name:       repositoryName,
+			constraint: constraint,
+			authToken:  token,
+		}, nil
+	}
+	if len(o.update) > 0 {
+		// Only update images in the update list
+		return &repository{
+			name:      repositoryName,
+			ignore:    !o.update[repositoryName],
+			authToken: token,
+		}, nil
+	}
 	return &repository{
-		name:       repositoryName,
-		constraint: o.constraints[repositoryName],
-
+		name:      repositoryName,
 		authToken: token,
 	}, nil
 }
