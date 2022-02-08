@@ -25,12 +25,16 @@ var (
 	constraintArgs rawConstraints
 	enforceArgs    rawConstraints
 	updateArgs     stringArray
+	dockerUsername string
+	dockerPassword string
 )
 
 const (
 	helpConstraint = "perform semver update on given docker image to satisfy semver constraint (repeatable)"
 	helpEnforce    = "override given docker image to enforce a semver constraint (repeatable)"
 	helpUpdate     = "update target docker images using the already set tags (repeatable)"
+	helpUsername   = "Docker Hub username (required)"
+	helpPassword   = "Docker Hub password or access token, https://docs.docker.com/docker-hub/access-tokens/ (required)"
 )
 
 func main() {
@@ -44,6 +48,8 @@ Options:
 	--constraint  %s 
 	--enforce     %s
 	--update      %s
+	--username    %s
+	--password    %s
 
 Examples:
 
@@ -62,12 +68,14 @@ Examples:
 	Override all tags in the given files and folders to enforce a constraint:
 
 	$ update-docker-tags --enforce=sourcegraph/frontend=~3.19
-`, helpConstraint, helpEnforce, helpUpdate)
+`, helpConstraint, helpEnforce, helpUpdate, helpUsername, helpPassword)
 		os.Exit(2)
 	}
 	flag.Var(&constraintArgs, "constraint", helpConstraint)
 	flag.Var(&enforceArgs, "enforce", helpEnforce)
 	flag.Var(&updateArgs, "update", helpEnforce)
+	flag.StringVar(&dockerUsername, "username", os.Getenv("CR_USERNAME"), helpUsername)
+	flag.StringVar(&dockerPassword, "password", os.Getenv("CR_PASSWORD"), helpPassword)
 
 	flag.Parse()
 
@@ -78,6 +86,12 @@ Examples:
 	parsedEnforce, err := enforceArgs.parse()
 	if err != nil {
 		log.Fatalf("failed to parse raw enforce, err: %s", err)
+	}
+	if dockerUsername == "" && dockerPassword == "" {
+		log.Println("no docker username and password provided, please note you may get rate-limited")
+	}
+	if (dockerUsername == "" && dockerPassword != "") || (dockerUsername != "" && dockerPassword == "") {
+		log.Fatalf("both docker username and password must be provided at the same time")
 	}
 
 	paths := flag.Args()
@@ -257,10 +271,16 @@ func (r *repository) fetchImageDigest(tag string) (string, error) {
 
 // Effectively the same as:
 //
-// 	$ export token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:sourcegraph/server:pull" | jq -r .token)
+// 	$ export token=$(curl --user 'user:password' -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:sourcegraph/server:pull" | jq -r .token)
+//
+// Learn more ➡️ https://docs.docker.com/docker-hub/download-rate-limit/#how-can-i-check-my-current-rate
 //
 func fetchAuthToken(repositoryName string) (string, error) {
-	resp, err := http.Get(fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repositoryName))
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repositoryName), nil)
+	if dockerUsername != "" && dockerPassword != "" {
+		req.SetBasicAuth(dockerUsername, dockerPassword)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
