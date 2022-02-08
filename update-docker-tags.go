@@ -87,11 +87,8 @@ Examples:
 	if err != nil {
 		log.Fatalf("failed to parse raw enforce, err: %s", err)
 	}
-	if dockerUsername == "" {
-		log.Fatal("--username is required")
-	}
-	if dockerPassword == "" {
-		log.Fatal("--password is required")
+	if dockerUsername == "" && dockerPassword == "" {
+		log.Println("no docker username and password provided, please note you may get rate-limited")
 	}
 
 	paths := flag.Args()
@@ -277,7 +274,9 @@ func (r *repository) fetchImageDigest(tag string) (string, error) {
 //
 func fetchAuthToken(repositoryName string) (string, error) {
 	req, err := http.NewRequest("GET", fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repositoryName), nil)
-	req.SetBasicAuth(dockerUsername, dockerPassword)
+	if dockerUsername != "" && dockerPassword != "" {
+		req.SetBasicAuth(dockerUsername, dockerPassword)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
