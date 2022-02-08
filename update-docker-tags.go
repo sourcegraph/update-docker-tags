@@ -34,7 +34,7 @@ const (
 	helpEnforce    = "override given docker image to enforce a semver constraint (repeatable)"
 	helpUpdate     = "update target docker images using the already set tags (repeatable)"
 	helpUsername   = "Docker Hub username (required)"
-	helpPassword   = "Docker Hub password (required)"
+	helpPassword   = "Docker Hub password or access token, https://docs.docker.com/docker-hub/access-tokens/ (required)"
 )
 
 func main() {
