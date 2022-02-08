@@ -90,6 +90,9 @@ Examples:
 	if dockerUsername == "" && dockerPassword == "" {
 		log.Println("no docker username and password provided, please note you may get rate-limited")
 	}
+	if (dockerUsername == "" && dockerPassword != "") || (dockerUsername != "" && dockerPassword == "") {
+		log.Fatalf("both docker username and password must be provided at the same time")
+	}
 
 	paths := flag.Args()
 	if len(paths) == 0 {
